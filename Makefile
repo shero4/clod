@@ -1,7 +1,7 @@
 BINARY   := clod
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  := -s -w -X main.version=$(VERSION)
-PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
+PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
 .PHONY: build release clean test vet tidy
 
@@ -20,9 +20,10 @@ tidy:
 release:
 	@rm -rf dist && mkdir -p dist
 	@for p in $(PLATFORMS); do \
-		os=$${p%/*}; arch=$${p#*/}; \
+		os=$${p%/*}; arch=$${p#*/}; ext=""; \
+		if [ "$$os" = "windows" ]; then ext=".exe"; fi; \
 		echo "  building $$os/$$arch"; \
-		GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-$$os-$$arch . || exit 1; \
+		GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-$$os-$$arch$$ext . || exit 1; \
 	done
 	cd dist && sha256sum * > SHA256SUMS
 	@echo "done: $(VERSION)"

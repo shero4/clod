@@ -28,8 +28,12 @@ curl -L https://github.com/shero4/clod/releases/latest/download/clod-linux-amd64
 chmod +x clod && sudo mv clod /usr/local/bin/
 ```
 
-Binaries: linux and macOS, amd64 and arm64. You also need `claude`
-installed (`npm i -g @anthropic-ai/claude-code`).
+Binaries: linux, macOS, and Windows, all amd64 and arm64. You also need
+`claude` installed (`npm i -g @anthropic-ai/claude-code`).
+
+On Windows, run clod from PowerShell or Windows Terminal (not legacy
+`cmd.exe`) so VT escape sequences work. Requires Windows 10 Anniversary
+Update or later for ConPTY.
 
 ## First run
 
@@ -210,7 +214,9 @@ someone you trust). If you want the normal tool-approval flow, pass
 - **Soft return path.** If the child ignores the `<clod_system>`
   instruction, `run` times out. I haven't seen this happen, but the only
   thing making it reliable is prompt-following.
-- **Unix only.** Linux and macOS. Windows (ConPTY) isn't wired up yet.
+- **Legacy `cmd.exe` won't work on Windows.** You need a VT-capable host
+  (Windows Terminal, PowerShell 7, VS Code terminal). Modern defaults on
+  Windows 10+ are fine. Plain old `cmd.exe` from Windows 7 isn't.
 
 ## Building
 
