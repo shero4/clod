@@ -72,18 +72,21 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	fmt.Printf("\u2713 claude at %s\n", claudePath)
-	fmt.Printf("\u25cf MCP server:      http://%s/mcp\n", addr)
-	fmt.Printf("\u25cf Permission mode: %s\n", *permissionMode)
-	printMCPSnippet(*bind, *port, *token)
-
-	// Start HTTP first so claude's --mcp-config can connect immediately.
+	// Start HTTP first so claude's --mcp-config can connect immediately and
+	// so the user can curl /healthz during the banner stage if they want.
 	errCh := make(chan error, 1)
 	go func() {
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
+
+	// Stage 1: print connection info and wait for the user to copy it.
+	printBanner(claudePath, *bind, *port, *token, *permissionMode, version)
+	waitForEnter()
+
+	// Stage 2: clear the screen and hand off to claude.
+	clearScreen()
 
 	// Build --mcp-config JSON pointing at our *internal* endpoint so the child
 	// claude can call submit_result back into clod.
@@ -103,11 +106,6 @@ func main() {
 	if *extraArgsStr != "" {
 		args = append(args, strings.Fields(*extraArgsStr)...)
 	}
-
-	fmt.Printf("\u25cf Launching claude (press Ctrl+C inside claude to cancel its current turn)\n\n")
-
-	// Small delay to let the HTTP server finish binding before claude dials it.
-	time.Sleep(200 * time.Millisecond)
 
 	p, err := StartPTY(PTYConfig{
 		Path: claudePath,
@@ -158,22 +156,60 @@ func buildInternalMCPConfig(url, token string) string {
 	return string(b)
 }
 
-func printMCPSnippet(bind string, port int, token string) {
+// printBanner writes the stage-1 screen: connection details the user needs
+// to paste into their remote Claude's .mcp.json, plus a press-Enter prompt.
+// Called before we enter raw mode, so plain Println is fine.
+func printBanner(claudePath, bind string, port int, token, permissionMode, ver string) {
 	host := bind
 	if host == "0.0.0.0" || host == "::" {
 		host = "<this-machine-ip>"
 	}
+	line := "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+
 	fmt.Println()
-	fmt.Println("\u2500\u2500 paste into your remote Claude's .mcp.json \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
-	fmt.Printf(`    "clod": {
-      "type": "http",
-      "url": "http://%s:%d/mcp",
-      "headers": {
-        "Authorization": "Bearer %s"
-      }
-    }
-`, host, port, token)
-	fmt.Println("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+	fmt.Printf("  clod %s\n", ver)
+	fmt.Println()
+	fmt.Printf("  claude binary    %s\n", claudePath)
+	fmt.Printf("  MCP server       http://%s:%d/mcp\n", host, port)
+	fmt.Printf("  permission mode  %s\n", permissionMode)
+	fmt.Println()
+	fmt.Println("  paste into your remote Claude's .mcp.json:")
+	fmt.Println()
+	fmt.Println("  " + line)
+	fmt.Printf("    \"clod\": {\n")
+	fmt.Printf("      \"type\": \"http\",\n")
+	fmt.Printf("      \"url\": \"http://%s:%d/mcp\",\n", host, port)
+	fmt.Printf("      \"headers\": {\n")
+	fmt.Printf("        \"Authorization\": \"Bearer %s\"\n", token)
+	fmt.Printf("      }\n")
+	fmt.Printf("    }\n")
+	fmt.Println("  " + line)
+	fmt.Println()
+	fmt.Print("  Press Enter to launch Claude Code...")
+}
+
+// waitForEnter blocks until the user presses Enter. We read byte-at-a-time
+// on os.Stdin rather than going through bufio, because on some Windows
+// console configurations bufio's lookahead can observe end-of-input
+// prematurely and return without waiting.
+func waitForEnter() {
+	b := make([]byte, 1)
+	for {
+		n, err := os.Stdin.Read(b)
+		if err != nil {
+			return
+		}
+		if n == 1 && b[0] == '\n' {
+			return
+		}
+	}
+}
+
+// clearScreen emits the standard VT "clear screen + home cursor" sequence.
+// Supported by all VT-compatible terminals, including Windows Terminal and
+// PowerShell 7.
+func clearScreen() {
+	fmt.Print("\x1b[2J\x1b[H")
 }
 
 // --- token persistence ---

@@ -48,6 +48,15 @@ func StartPTY(cfg PTYConfig) (*PTY, error) {
 		return nil, fmt.Errorf("open pty: %w", err)
 	}
 
+	// Size the PTY to the parent TTY BEFORE starting the child. go-pty's
+	// default ConPTY size on Windows is 80x25, and some TUIs (claude among
+	// them) render their initial layout against that and don't cleanly
+	// redraw on a later resize. Setting the size up front avoids the
+	// wrapped-headers / cramped-panels look.
+	if w, h, sizeErr := term.GetSize(stdinFd); sizeErr == nil {
+		_ = ptmx.Resize(w, h)
+	}
+
 	cmd := ptmx.Command(cfg.Path, cfg.Args...)
 	cmd.Dir = cfg.Dir
 	cmd.Env = cfg.Env
@@ -63,9 +72,8 @@ func StartPTY(cfg PTYConfig) (*PTY, error) {
 		done: make(chan struct{}),
 	}
 
-	// Match the child's window size to the parent's, initially and on resize.
-	syncSize(p)
-	watchResize(p) // platform-specific watcher (see pty_unix.go / pty_windows.go)
+	// Keep size synced on subsequent parent-TTY resizes.
+	watchResize(p) // platform-specific (see pty_unix.go / pty_windows.go)
 
 	// Raw mode on the parent TTY so keystrokes pass through byte-for-byte.
 	state, err := term.MakeRaw(stdinFd)
