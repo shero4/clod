@@ -4,11 +4,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"sync"
-	"syscall"
 
-	"github.com/creack/pty"
+	xpty "github.com/aymanbagabas/go-pty"
 	"golang.org/x/term"
 )
 
@@ -16,54 +14,73 @@ import (
 // between the user's real TTY (os.Stdin/os.Stdout) and the PTY master, so the
 // child sees a normal interactive terminal. Inject writes programmatic bytes
 // into the PTY master without racing the stdin copier.
+//
+// go-pty provides a single abstraction over Unix PTYs (via creack/pty) and
+// Windows ConPTY, so this file is platform-neutral; only the resize-event
+// source differs per-OS (see pty_unix.go / pty_windows.go).
 type PTY struct {
-	cmd      *exec.Cmd
-	master   *os.File
-	writeMu  sync.Mutex // guards concurrent writes to master
+	pty      xpty.Pty
+	cmd      *xpty.Cmd
+	writeMu  sync.Mutex // guards concurrent writes to the master
 	rawState *term.State
 	done     chan struct{}
 }
 
-// StartPTY spawns cmd on a new PTY. Must be called from a real TTY (os.Stdin
-// must be a terminal). Places the parent TTY in raw mode; call Wait to
-// restore.
-func StartPTY(cmd *exec.Cmd) (*PTY, error) {
+// PTYConfig is the spawn request for StartPTY.
+type PTYConfig struct {
+	Path string   // binary to exec
+	Args []string // arguments (not including argv[0])
+	Dir  string   // working directory
+	Env  []string // environment
+}
+
+// StartPTY spawns the child on a new pseudo-terminal. Must be called from a
+// real TTY (os.Stdin must be a terminal). Places the parent TTY in raw mode;
+// call Wait to restore it.
+func StartPTY(cfg PTYConfig) (*PTY, error) {
 	stdinFd := int(os.Stdin.Fd())
 	if !term.IsTerminal(stdinFd) {
 		return nil, fmt.Errorf("clod must run in a real terminal (stdin is not a tty)")
 	}
 
-	master, err := pty.Start(cmd)
+	ptmx, err := xpty.New()
 	if err != nil {
-		return nil, fmt.Errorf("pty start: %w", err)
+		return nil, fmt.Errorf("open pty: %w", err)
+	}
+
+	cmd := ptmx.Command(cfg.Path, cfg.Args...)
+	cmd.Dir = cfg.Dir
+	cmd.Env = cfg.Env
+
+	if err := cmd.Start(); err != nil {
+		_ = ptmx.Close()
+		return nil, fmt.Errorf("start child: %w", err)
 	}
 
 	p := &PTY{
-		cmd:    cmd,
-		master: master,
-		done:   make(chan struct{}),
+		pty:  ptmx,
+		cmd:  cmd,
+		done: make(chan struct{}),
 	}
 
-	// Initial window size sync.
-	if err := pty.InheritSize(os.Stdin, master); err != nil {
-		fmt.Fprintf(os.Stderr, "clod: inherit size: %v\n", err)
-	}
-	// Platform-specific resize watcher (SIGWINCH on unix, polling on windows).
-	watchResize(p)
+	// Match the child's window size to the parent's, initially and on resize.
+	syncSize(p)
+	watchResize(p) // platform-specific watcher (see pty_unix.go / pty_windows.go)
 
 	// Raw mode on the parent TTY so keystrokes pass through byte-for-byte.
 	state, err := term.MakeRaw(stdinFd)
 	if err != nil {
-		_ = master.Close()
+		_ = cmd.Process.Kill()
+		_ = ptmx.Close()
 		return nil, fmt.Errorf("make raw: %w", err)
 	}
 	p.rawState = state
 
-	// stdin -> pty master. Locked so Inject can interleave without corrupting
-	// a partial user keystroke.
+	// stdin -> pty. Locked so Inject can interleave without corrupting a
+	// partial user keystroke.
 	go p.stdinLoop()
-	// pty master -> stdout. Single writer to stdout; no lock needed.
-	go func() { _, _ = io.Copy(os.Stdout, master) }()
+	// pty -> stdout. Single writer to stdout; no lock needed.
+	go func() { _, _ = io.Copy(os.Stdout, ptmx) }()
 
 	return p, nil
 }
@@ -74,7 +91,7 @@ func (p *PTY) stdinLoop() {
 		n, err := os.Stdin.Read(buf)
 		if n > 0 {
 			p.writeMu.Lock()
-			_, werr := p.master.Write(buf[:n])
+			_, werr := p.pty.Write(buf[:n])
 			p.writeMu.Unlock()
 			if werr != nil {
 				return
@@ -91,7 +108,7 @@ func (p *PTY) stdinLoop() {
 func (p *PTY) Inject(text string) error {
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
-	_, err := io.WriteString(p.master, text)
+	_, err := io.WriteString(p.pty, text)
 	return err
 }
 
@@ -102,14 +119,24 @@ func (p *PTY) Wait() error {
 	if p.rawState != nil {
 		_ = term.Restore(int(os.Stdin.Fd()), p.rawState)
 	}
-	_ = p.master.Close()
+	_ = p.pty.Close()
 	return err
 }
 
-// Kill signals the child process to terminate.
+// Kill terminates the child process. Portable across Unix (SIGKILL) and
+// Windows (TerminateProcess).
 func (p *PTY) Kill() {
 	if p.cmd.Process != nil {
-		// SIGTERM on unix; on windows syscall.SIGTERM maps to process kill.
-		_ = p.cmd.Process.Signal(syscall.SIGTERM)
+		_ = p.cmd.Process.Kill()
 	}
+}
+
+// syncSize reads the current size of the parent TTY and applies it to the
+// child's PTY slave.
+func syncSize(p *PTY) {
+	w, h, err := term.GetSize(int(os.Stdin.Fd()))
+	if err != nil {
+		return
+	}
+	_ = p.pty.Resize(w, h)
 }

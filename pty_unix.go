@@ -6,8 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-
-	"github.com/creack/pty"
 )
 
 // watchResize wires SIGWINCH so terminal resize events from the parent TTY
@@ -22,7 +20,7 @@ func watchResize(p *PTY) {
 			case <-p.done:
 				return
 			case <-ch:
-				_ = pty.InheritSize(os.Stdin, p.master)
+				syncSize(p)
 			}
 		}
 	}()

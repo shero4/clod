@@ -104,16 +104,17 @@ func main() {
 		args = append(args, strings.Fields(*extraArgsStr)...)
 	}
 
-	cmd := exec.Command(claudePath, args...)
-	cmd.Dir = *cwd
-	cmd.Env = os.Environ()
-
 	fmt.Printf("\u25cf Launching claude (press Ctrl+C inside claude to cancel its current turn)\n\n")
 
 	// Small delay to let the HTTP server finish binding before claude dials it.
 	time.Sleep(200 * time.Millisecond)
 
-	p, err := StartPTY(cmd)
+	p, err := StartPTY(PTYConfig{
+		Path: claudePath,
+		Args: args,
+		Dir:  *cwd,
+		Env:  os.Environ(),
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: start claude pty:", err)
 		_ = httpSrv.Shutdown(context.Background())

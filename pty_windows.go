@@ -6,7 +6,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/creack/pty"
 	"golang.org/x/term"
 )
 
@@ -28,7 +27,7 @@ func watchResize(p *PTY) {
 					continue
 				}
 				if w != lastW || h != lastH {
-					_ = pty.InheritSize(os.Stdin, p.master)
+					syncSize(p)
 					lastW, lastH = w, h
 				}
 			}
